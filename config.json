@@ -1,0 +1,57 @@
+{
+  "data": {
+    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "timeframes": ["5m", "30m", "1h", "1d", "1w"],
+    "start_date": "2022-01-01",
+    "sequence_length": 50,
+    "prediction_horizons": {
+      "5m": 12,
+      "30m": 8,
+      "1h": 6,
+      "1d": 7,
+      "1w": 4
+    }
+  },
+  "model": {
+    "hidden_dim": 128,
+    "num_layers": 3,
+    "num_heads": 4,
+    "dropout": 0.1,
+    "use_gating": true
+  },
+  "training": {
+    "batch_size": 16,
+    "learning_rate": 0.0001,
+    "num_epochs": 50,
+    "weight_decay": 0.01,
+    "grad_clip": 1.0,
+    "scheduler": "cosine",
+    "min_lr": 0.000001,
+    "early_stopping": true,
+    "early_stopping_patience": 15,
+    "train_split": 0.8,
+    "val_split": 0.1,
+    "test_split": 0.1,
+    "device": "auto",
+    "force_cpu": false,
+    "num_workers": "auto"
+  },
+  "loss": {
+    "price_weight": 1.0,
+    "direction_weight": 0.5,
+    "volatility_weight": 0.3,
+    "diversity_weight": 0.1
+  },
+  "lora": {
+    "enabled": true,
+    "r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.1
+  },
+  "paths": {
+    "data_dir": "./data",
+    "model_dir": "./models",
+    "logs_dir": "./logs",
+    "output_dir": "./output"
+  }
+}

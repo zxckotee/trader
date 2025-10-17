@@ -1,0 +1,18 @@
+# CPU-optimized requirements for trader_ml project
+torch==2.1.0+cpu
+torchvision==0.16.0+cpu
+torchaudio==2.1.0+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+transformers>=4.30.0
+peft>=0.4.0
+numpy>=1.24.0
+pandas>=2.0.0
+requests>=2.31.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+scikit-learn>=1.3.0
+tqdm>=4.65.0
+python-dotenv>=1.0.0
+ccxt>=4.0.0
+ta>=0.10.2
