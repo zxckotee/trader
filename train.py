@@ -49,6 +49,8 @@ def parse_args():
                        default='auto', help='Device to use for training')
     parser.add_argument('--force-cpu', action='store_true',
                        help='Force CPU usage even if GPU is available')
+    parser.add_argument('--resume', '--checkpoint', type=str, 
+                       help='Path to checkpoint to resume training from')
     
     return parser.parse_args()
 
@@ -364,6 +366,11 @@ def main():
         config=trainer_config
     )
     
+    # Load checkpoint if resuming
+    if args.resume:
+        print("\n=== Resuming Training ===")
+        trainer.load_checkpoint(args.resume)
+    
     # Apply LoRA if requested
     if args.use_lora and config.get('lora.enabled'):
         print("\n=== Applying LoRA ===")
@@ -375,15 +382,22 @@ def main():
     
     # Start training
     print("\n=== Training ===")
-    trainer.train()
-    
-    # Evaluate on test set
-    if test_dataset:
-        print("\n=== Test Evaluation ===")
-        # You would implement test evaluation here
-        print("Test evaluation completed")
-    
-    print("\nTraining completed successfully!")
+    try:
+        trainer.train()
+        
+        # Evaluate on test set
+        if test_dataset:
+            print("\n=== Test Evaluation ===")
+            # You would implement test evaluation here
+            print("Test evaluation completed")
+        
+        print("\nTraining completed successfully!")
+        
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Training interrupted by user (Ctrl+C)")
+        print(f"💾 Last checkpoint saved: {config.get('paths.model_dir')}/checkpoint_epoch_*.pt")
+        print(f"💡 Resume training with: python train.py --resume {config.get('paths.model_dir')}/checkpoint_epoch_N.pt --epochs {config.get('training.num_epochs')}")
+        return
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ Device management utilities for CPU/GPU switching.
 
 import torch
 import os
+import platform
 from typing import Tuple, Optional
 
 
@@ -67,6 +68,11 @@ class DeviceManager:
             return num_workers
         
         if num_workers == 'auto':
+            # Windows multiprocessing has issues with KeyboardInterrupt
+            # Use 0 workers to avoid messy tracebacks on Ctrl+C
+            if platform.system() == 'Windows':
+                return 0
+            
             if device.type == 'cpu':
                 # For CPU, use fewer workers to avoid overhead
                 return min(4, os.cpu_count() or 2)
@@ -190,6 +196,8 @@ def setup_device_from_config(config: dict) -> Tuple[torch.device, dict]:
     manager.print_device_info(device)
     print(f"   Batch size: {device_config['batch_size']}")
     print(f"   Workers: {device_config['num_workers']}")
+    if platform.system() == 'Windows' and device_config['num_workers'] == 0:
+        print(f"   ℹ️  Using 0 workers on Windows for cleaner Ctrl+C handling")
     print(f"   Pin memory: {device_config['pin_memory']}")
     
     return device, device_config

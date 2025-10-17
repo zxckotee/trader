@@ -185,6 +185,47 @@ class MoETrainer:
         # Output directory
         self.output_dir = Path(config.get('output_dir', './models'))
         self.output_dir.mkdir(exist_ok=True)
+        
+        # Starting epoch (for resume training)
+        self.start_epoch = 0
+    
+    def load_checkpoint(self, checkpoint_path: str) -> None:
+        """
+        Load checkpoint to resume training.
+        
+        Args:
+            checkpoint_path: Path to checkpoint file
+        """
+        print(f"Loading checkpoint from {checkpoint_path}...")
+        
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        
+        # Load model state
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"✅ Model state loaded from epoch {checkpoint['epoch']}")
+        
+        # Load optimizer state
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        print("✅ Optimizer state loaded")
+        
+        # Load scheduler state if exists
+        if self.scheduler and 'scheduler_state_dict' in checkpoint:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            print("✅ Scheduler state loaded")
+        
+        # Load training history
+        if 'history' in checkpoint:
+            self.history = checkpoint['history']
+            print(f"✅ Training history loaded ({len(self.history['train_loss'])} epochs)")
+        
+        # Load best validation loss
+        if 'best_val_loss' in checkpoint:
+            self.best_val_loss = checkpoint['best_val_loss']
+            print(f"✅ Best validation loss: {self.best_val_loss:.6f}")
+        
+        # Set starting epoch
+        self.start_epoch = checkpoint['epoch'] + 1
+        print(f"✅ Will resume from epoch {self.start_epoch}")
     
     def apply_lora(self, 
                    target_modules: List[str] = None,
@@ -390,9 +431,12 @@ class MoETrainer:
         print(f"Starting training on {self.device}")
         print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
         
+        if self.start_epoch > 0:
+            print(f"Resuming training from epoch {self.start_epoch}")
+        
         start_time = time.time()
         
-        for epoch in range(self.config['num_epochs']):
+        for epoch in range(self.start_epoch, self.config['num_epochs']):
             print(f"\nEpoch {epoch+1}/{self.config['num_epochs']}")
             
             # Train
