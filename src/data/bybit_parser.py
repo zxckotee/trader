@@ -177,7 +177,13 @@ class BybitParser:
         ])
         
         # Convert data types
-        df['timestamp'] = pd.to_datetime(df['timestamp'].astype(int), unit='ms')
+        # Handle timestamp conversion safely to avoid "int too large" error
+        try:
+            df['timestamp'] = pd.to_datetime(df['timestamp'].astype(float), unit='ms', errors='coerce')
+        except (ValueError, OverflowError):
+            # Fallback: convert to string first, then to datetime
+            df['timestamp'] = pd.to_datetime(df['timestamp'].astype(str).astype(float), unit='ms', errors='coerce')
+        
         numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'turnover']
         df[numeric_columns] = df[numeric_columns].astype(float)
         
@@ -210,12 +216,18 @@ class BybitParser:
             
         interval = self.TIMEFRAMES[timeframe]
         
-        # Convert dates to timestamps
+        # Convert dates to timestamps (safe conversion for Windows)
         start_dt = datetime.strptime(start_date, '%Y-%m-%d')
         end_dt = datetime.strptime(end_date, '%Y-%m-%d') if end_date else datetime.now()
         
-        start_timestamp = int(start_dt.timestamp() * 1000)
-        end_timestamp = int(end_dt.timestamp() * 1000)
+        # Use explicit conversion to avoid "int too large" error
+        try:
+            start_timestamp = int(start_dt.timestamp() * 1000)
+            end_timestamp = int(end_dt.timestamp() * 1000)
+        except (ValueError, OverflowError):
+            # Fallback for very old dates or Windows issues (time already imported at top)
+            start_timestamp = int(time.mktime(start_dt.timetuple()) * 1000)
+            end_timestamp = int(time.mktime(end_dt.timetuple()) * 1000)
         
         # Calculate expected number of records for progress tracking
         timeframe_minutes = {
@@ -380,7 +392,7 @@ def main():
     # Define parameters
     symbol = "BTCUSDT"
     timeframes = ['5m', '30m', '1h', '1d', '1w']  # All required timeframes
-    start_date = "2019-01-01"
+    start_date = "2022-01-01"  # Recommended: 2022 or later to avoid timestamp issues
     
     # Collect data for all timeframes
     data = parser.collect_multi_timeframe_data(

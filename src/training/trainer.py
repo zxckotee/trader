@@ -79,12 +79,14 @@ class CryptoDataset(Dataset):
                 # Input features
                 inputs[tf] = torch.FloatTensor(self.data_dict[tf]['X'][idx])
                 
-                # Targets (price_change, direction, volatility)
+                # Targets (price_change, direction, volatility, magnitude, percentile)
                 y = self.data_dict[tf]['y'][idx]
                 if tf not in targets:  # Use first timeframe as primary target
                     targets['price_change'] = torch.FloatTensor([y[0]])
                     targets['direction'] = torch.LongTensor([y[1]])
                     targets['volatility'] = torch.FloatTensor([y[2]])
+                    targets['magnitude'] = torch.FloatTensor([y[3]])
+                    targets['percentile'] = torch.FloatTensor([y[4]])
         
         return inputs, targets
 
@@ -139,8 +141,13 @@ class MoETrainer:
             price_weight=config.get('price_weight', 1.0),
             direction_weight=config.get('direction_weight', 0.5),
             volatility_weight=config.get('volatility_weight', 0.3),
+            magnitude_weight=config.get('magnitude_weight', 0.2),
+            percentile_weight=config.get('percentile_weight', 0.2),
             diversity_weight=config.get('diversity_weight', 0.1)
         )
+        
+        # Gradient accumulation
+        self.gradient_accumulation_steps = config.get('gradient_accumulation_steps', 1)
         
         # Optimizer
         self.optimizer = AdamW(
@@ -198,20 +205,28 @@ class MoETrainer:
         """
         print(f"Loading checkpoint from {checkpoint_path}...")
         
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         
         # Load model state
         self.model.load_state_dict(checkpoint['model_state_dict'])
         print(f"✅ Model state loaded from epoch {checkpoint['epoch']}")
         
-        # Load optimizer state
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        print("✅ Optimizer state loaded")
+        # Load optimizer state (with error handling for config changes)
+        try:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            print("✅ Optimizer state loaded")
+        except (ValueError, KeyError) as e:
+            print(f"⚠️  Could not load optimizer state (likely due to config change): {e}")
+            print("⚠️  Optimizer will start fresh (this is OK, training will continue)")
         
         # Load scheduler state if exists
         if self.scheduler and 'scheduler_state_dict' in checkpoint:
-            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-            print("✅ Scheduler state loaded")
+            try:
+                self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                print("✅ Scheduler state loaded")
+            except (ValueError, KeyError) as e:
+                print(f"⚠️  Could not load scheduler state: {e}")
+                print("⚠️  Scheduler will start fresh")
         
         # Load training history
         if 'history' in checkpoint:
@@ -226,6 +241,7 @@ class MoETrainer:
         # Set starting epoch
         self.start_epoch = checkpoint['epoch'] + 1
         print(f"✅ Will resume from epoch {self.start_epoch}")
+        print(f"ℹ️  Note: Training will continue but optimizer/scheduler may have reset due to config changes")
     
     def apply_lora(self, 
                    target_modules: List[str] = None,
@@ -316,33 +332,61 @@ class MoETrainer:
         
         pbar = tqdm(self.train_loader, desc="Training")
         
+        # Debug: Check first batch data range
+        first_batch = True
+        
         for batch_idx, (inputs, targets) in enumerate(pbar):
             # Move to device
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
             targets = {k: v.to(self.device) for k, v in targets.items()}
             
+            # Debug: Print first batch statistics
+            if first_batch:
+                print(f"\n🔍 First batch diagnostics:")
+                print(f"   Price change range: [{targets['price_change'].min():.6f}, {targets['price_change'].max():.6f}]")
+                print(f"   Price change mean: {targets['price_change'].mean():.6f}, std: {targets['price_change'].std():.6f}")
+                print(f"   Volatility range: [{targets['volatility'].min():.6f}, {targets['volatility'].max():.6f}]")
+                print(f"   Direction: {targets['direction'].float().mean():.2f} (0.5 = balanced)")
+                first_batch = False
+            
             # Forward pass
-            self.optimizer.zero_grad()
             outputs = self.model(inputs)
             
             # Compute loss
             loss_dict = self.criterion(outputs, targets)
             loss = loss_dict['total_loss']
             
+            # Scale loss for gradient accumulation
+            loss = loss / self.gradient_accumulation_steps
+            
+            # Debug: Print first batch loss components
+            if batch_idx == 0 and hasattr(self, '_first_epoch_logged') is False:
+                print(f"\n📊 Loss components (first batch):")
+                for key, value in loss_dict.items():
+                    if key != 'total_loss':
+                        print(f"   {key}: {value.item():.2f}")
+                print(f"   total_loss: {loss_dict['total_loss'].item():.2f}")
+                print(f"   Loss weights: price={self.criterion.price_weight}, dir={self.criterion.direction_weight}, vol={self.criterion.volatility_weight}")
+                print(f"   Gradient accumulation steps: {self.gradient_accumulation_steps}\n")
+                self._first_epoch_logged = True
+            
             # Backward pass
             loss.backward()
             
-            # Gradient clipping
-            if self.config.get('grad_clip'):
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), 
-                    self.config['grad_clip']
-                )
+            # Perform optimizer step every N accumulation steps
+            if (batch_idx + 1) % self.gradient_accumulation_steps == 0 or (batch_idx + 1) == len(self.train_loader):
+                # Gradient clipping
+                if self.config.get('grad_clip'):
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), 
+                        self.config['grad_clip']
+                    )
+                
+                self.optimizer.step()
+                self.optimizer.zero_grad()
             
-            self.optimizer.step()
-            
-            # Update metrics
-            total_loss += loss.item()
+            # Update metrics (use unscaled loss for metrics)
+            total_loss += loss_dict['total_loss'].item()
             if 'price_loss' in loss_dict:
                 total_price_loss += loss_dict['price_loss'].item()
             
@@ -354,9 +398,9 @@ class MoETrainer:
             
             total_samples += targets['price_change'].size(0)
             
-            # Update progress bar
+            # Update progress bar (show unscaled loss)
             pbar.set_postfix({
-                'loss': f"{loss.item():.4f}",
+                'loss': f"{loss_dict['total_loss'].item():.4f}",
                 'lr': f"{self.optimizer.param_groups[0]['lr']:.2e}"
             })
         
@@ -461,12 +505,20 @@ class MoETrainer:
                   f"Val Dir Acc: {val_metrics['val_direction_acc']:.4f}")
             print(f"Val R2: {val_metrics['val_r2']:.4f}")
             
-            # Save best model
+            # Save checkpoint after every epoch
+            is_best = False
             if val_metrics['val_loss'] < self.best_val_loss:
                 self.best_val_loss = val_metrics['val_loss']
                 self.best_model_state = self.model.state_dict().copy()
-                self.save_checkpoint(epoch, is_best=True)
-                print("New best model saved!")
+                is_best = True
+                print("🏆 New best model!")
+            
+            # Save checkpoint (always, but mark if best)
+            self.save_checkpoint(epoch, is_best=is_best)
+            
+            # Save training history and plots after each epoch
+            self.save_training_history()
+            self.plot_training_history()
             
             # Learning rate scheduling
             if self.scheduler:
@@ -499,32 +551,55 @@ class MoETrainer:
     
     def save_checkpoint(self, epoch: int, is_best: bool = False) -> None:
         """Save model checkpoint."""
-        checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'best_val_loss': self.best_val_loss,
-            'history': self.history,
-            'config': self.config
-        }
-        
-        if self.scheduler:
-            checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
-        
-        # Save regular checkpoint
-        checkpoint_path = self.output_dir / f"checkpoint_epoch_{epoch}.pt"
-        torch.save(checkpoint, checkpoint_path)
-        
-        # Save best model
-        if is_best:
-            best_path = self.output_dir / "best_model.pt"
-            torch.save(checkpoint, best_path)
+        try:
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'best_val_loss': self.best_val_loss,
+                'history': self.history,
+                'config': self.config
+            }
+            
+            if self.scheduler:
+                checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+            
+            # Save regular checkpoint
+            checkpoint_path = self.output_dir / f"checkpoint_epoch_{epoch}.pt"
+            torch.save(checkpoint, checkpoint_path)
+            print(f"✅ Saved checkpoint to: {checkpoint_path}")
+            
+            # Save best model
+            if is_best:
+                best_path = self.output_dir / "best_model.pt"
+                torch.save(checkpoint, best_path)
+                print(f"✅ Saved best model to: {best_path}")
+            
+            # Clean up old checkpoints (keep only last N)
+            keep_last_n = self.config.get('keep_last_n_checkpoints', 5)
+            if keep_last_n > 0:
+                # Sort checkpoints by epoch number, not filename
+                checkpoints = list(self.output_dir.glob("checkpoint_epoch_*.pt"))
+                checkpoints.sort(key=lambda p: int(p.stem.split('_')[-1]))  # Extract epoch number
+                print(f"📊 Total checkpoints: {len(checkpoints)}, keeping last {keep_last_n}")
+                if checkpoints:
+                    print(f"   Range: {checkpoints[0].stem} -> {checkpoints[-1].stem}")
+                # Keep best_model.pt and last N checkpoints
+                if len(checkpoints) > keep_last_n:
+                    for old_checkpoint in checkpoints[:-keep_last_n]:
+                        print(f"🗑️  Deleting old checkpoint: {old_checkpoint.name}")
+                        old_checkpoint.unlink()  # Delete old checkpoint
+        except Exception as e:
+            print(f"❌ Error saving checkpoint: {e}")
+            import traceback
+            traceback.print_exc()
     
     def save_training_history(self) -> None:
         """Save training history to JSON."""
         history_path = self.output_dir / "training_history.json"
         with open(history_path, 'w') as f:
             json.dump(self.history, f, indent=2)
+        print(f"📊 Training history saved: {history_path.name}")
     
     def plot_training_history(self) -> None:
         """Plot training curves."""
@@ -566,8 +641,10 @@ class MoETrainer:
         axes[1, 1].grid(True)
         
         plt.tight_layout()
-        plt.savefig(self.output_dir / 'training_curves.png', dpi=300, bbox_inches='tight')
+        plot_path = self.output_dir / 'training_curves.png'
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         plt.close()
+        print(f"📈 Training curves saved: {plot_path.name}")
 
 
 def create_trainer_config() -> Dict[str, Any]:
@@ -587,7 +664,8 @@ def create_trainer_config() -> Dict[str, Any]:
         'direction_weight': 0.5,
         'volatility_weight': 0.3,
         'diversity_weight': 0.1,
-        'output_dir': './models'
+        'output_dir': './models',
+        'keep_last_n_checkpoints': 5  # Keep only last N checkpoints (0 = keep all)
     }
 
 

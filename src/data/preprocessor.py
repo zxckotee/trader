@@ -46,6 +46,7 @@ class CryptoDataPreprocessor:
     def calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Calculate technical indicators for the given DataFrame.
+        Now uses percentage changes instead of raw prices for better generalization.
         
         Args:
             df: DataFrame with OHLCV data
@@ -55,116 +56,235 @@ class CryptoDataPreprocessor:
         """
         df = df.copy()
         
+        # Calculate percentage changes first (this is the key change!)
+        df['price_change'] = df['close'].pct_change()
+        df['volume_change'] = df['volume'].pct_change()
+        df['high_change'] = df['high'].pct_change()
+        df['low_change'] = df['low'].pct_change()
+        df['open_change'] = df['open'].pct_change()
+        
+        # Price range changes
+        df['hl_change'] = (df['high'] - df['low']) / (df['close'].shift(1) + 1e-8)
+        df['co_change'] = (df['close'] - df['open']) / (df['open'] + 1e-8)
+        
         try:
-            # Price-based indicators
-            df['sma_20'] = ta.trend.sma_indicator(df['close'], window=20)
-            df['sma_50'] = ta.trend.sma_indicator(df['close'], window=50)
-            df['ema_12'] = ta.trend.ema_indicator(df['close'], window=12)
-            df['ema_26'] = ta.trend.ema_indicator(df['close'], window=26)
+            # Price-based indicators using percentage changes
+            df['sma_20_change'] = df['price_change'].rolling(window=20).mean()
+            df['sma_50_change'] = df['price_change'].rolling(window=50).mean()
+            df['ema_12_change'] = df['price_change'].ewm(span=12).mean()
+            df['ema_26_change'] = df['price_change'].ewm(span=26).mean()
+            
+            # Volatility indicators using percentage changes
+            df['volatility_20'] = df['price_change'].rolling(window=20).std()
+            df['volatility_50'] = df['price_change'].rolling(window=50).std()
         except Exception as e:
             print(f"Warning: Error calculating moving averages: {e}")
             # Fallback calculations
-            df['sma_20'] = df['close'].rolling(window=20).mean()
-            df['sma_50'] = df['close'].rolling(window=50).mean()
-            df['ema_12'] = df['close'].ewm(span=12).mean()
-            df['ema_26'] = df['close'].ewm(span=26).mean()
+            df['sma_20_change'] = df['price_change'].rolling(window=20).mean()
+            df['sma_50_change'] = df['price_change'].rolling(window=50).mean()
+            df['ema_12_change'] = df['price_change'].ewm(span=12).mean()
+            df['ema_26_change'] = df['price_change'].ewm(span=26).mean()
+            df['volatility_20'] = df['price_change'].rolling(window=20).std()
+            df['volatility_50'] = df['price_change'].rolling(window=50).std()
         
         try:
-            # Bollinger Bands
-            bb = ta.volatility.BollingerBands(df['close'])
-            df['bb_upper'] = bb.bollinger_hband()
-            df['bb_middle'] = bb.bollinger_mavg()
-            df['bb_lower'] = bb.bollinger_lband()
-            df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / (df['bb_middle'] + 1e-8)
-            df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-8)
+            # Bollinger Bands using percentage changes
+            bb = ta.volatility.BollingerBands(df['price_change'])
+            df['bb_upper_change'] = bb.bollinger_hband()
+            df['bb_middle_change'] = bb.bollinger_mavg()
+            df['bb_lower_change'] = bb.bollinger_lband()
+            df['bb_width_change'] = (df['bb_upper_change'] - df['bb_lower_change']) / (df['bb_middle_change'].abs() + 1e-8)
+            df['bb_position_change'] = (df['price_change'] - df['bb_lower_change']) / (df['bb_upper_change'] - df['bb_lower_change'] + 1e-8)
         except Exception as e:
             print(f"Warning: Error calculating Bollinger Bands: {e}")
-            # Fallback Bollinger Bands
-            sma_20 = df['close'].rolling(window=20).mean()
-            std_20 = df['close'].rolling(window=20).std()
-            df['bb_upper'] = sma_20 + (std_20 * 2)
-            df['bb_middle'] = sma_20
-            df['bb_lower'] = sma_20 - (std_20 * 2)
-            df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / (df['bb_middle'] + 1e-8)
-            df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-8)
+            # Fallback Bollinger Bands using percentage changes
+            sma_20_change = df['price_change'].rolling(window=20).mean()
+            std_20_change = df['price_change'].rolling(window=20).std()
+            df['bb_upper_change'] = sma_20_change + (std_20_change * 2)
+            df['bb_middle_change'] = sma_20_change
+            df['bb_lower_change'] = sma_20_change - (std_20_change * 2)
+            df['bb_width_change'] = (df['bb_upper_change'] - df['bb_lower_change']) / (df['bb_middle_change'].abs() + 1e-8)
+            df['bb_position_change'] = (df['price_change'] - df['bb_lower_change']) / (df['bb_upper_change'] - df['bb_lower_change'] + 1e-8)
         
         try:
-            # RSI
-            df['rsi'] = ta.momentum.rsi(df['close'], window=14)
+            # RSI using percentage changes
+            df['rsi_change'] = ta.momentum.rsi(df['price_change'], window=14)
         except Exception as e:
             print(f"Warning: Error calculating RSI: {e}")
-            # Fallback RSI calculation
-            delta = df['close'].diff()
+            # Fallback RSI calculation using percentage changes
+            delta = df['price_change'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
             rs = gain / (loss + 1e-8)  # Avoid division by zero
-            df['rsi'] = 100 - (100 / (1 + rs))
+            df['rsi_change'] = 100 - (100 / (1 + rs))
         
         try:
-            # MACD
-            macd = ta.trend.MACD(df['close'])
-            df['macd'] = macd.macd()
-            df['macd_signal'] = macd.macd_signal()
-            df['macd_histogram'] = macd.macd_diff()
+            # MACD using percentage changes
+            macd = ta.trend.MACD(df['price_change'])
+            df['macd_change'] = macd.macd()
+            df['macd_signal_change'] = macd.macd_signal()
+            df['macd_histogram_change'] = macd.macd_diff()
         except Exception as e:
             print(f"Warning: Error calculating MACD: {e}")
-            # Fallback MACD calculation
-            ema_12 = df['close'].ewm(span=12).mean()
-            ema_26 = df['close'].ewm(span=26).mean()
-            df['macd'] = ema_12 - ema_26
-            df['macd_signal'] = df['macd'].ewm(span=9).mean()
-            df['macd_histogram'] = df['macd'] - df['macd_signal']
+            # Fallback MACD calculation using percentage changes
+            ema_12_change = df['price_change'].ewm(span=12).mean()
+            ema_26_change = df['price_change'].ewm(span=26).mean()
+            df['macd_change'] = ema_12_change - ema_26_change
+            df['macd_signal_change'] = df['macd_change'].ewm(span=9).mean()
+            df['macd_histogram_change'] = df['macd_change'] - df['macd_signal_change']
         
         try:
-            # Stochastic Oscillator
-            stoch = ta.momentum.StochasticOscillator(df['high'], df['low'], df['close'])
-            df['stoch_k'] = stoch.stoch()
-            df['stoch_d'] = stoch.stoch_signal()
+            # Stochastic Oscillator using percentage changes
+            stoch = ta.momentum.StochasticOscillator(df['high_change'], df['low_change'], df['price_change'])
+            df['stoch_k_change'] = stoch.stoch()
+            df['stoch_d_change'] = stoch.stoch_signal()
         except Exception as e:
             print(f"Warning: Error calculating Stochastic: {e}")
-            # Fallback Stochastic calculation
-            low_min = df['low'].rolling(window=14).min()
-            high_max = df['high'].rolling(window=14).max()
-            df['stoch_k'] = 100 * (df['close'] - low_min) / (high_max - low_min + 1e-8)
-            df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
+            # Fallback Stochastic calculation using percentage changes
+            low_min_change = df['low_change'].rolling(window=14).min()
+            high_max_change = df['high_change'].rolling(window=14).max()
+            df['stoch_k_change'] = 100 * (df['price_change'] - low_min_change) / (high_max_change - low_min_change + 1e-8)
+            df['stoch_d_change'] = df['stoch_k_change'].rolling(window=3).mean()
         
-        # Volume indicators
-        df['volume_sma'] = df['volume'].rolling(window=20).mean()
+        # Volume indicators using percentage changes
+        # === VOLUME ANALYSIS (КРИТИЧНО ДЛЯ ОБНАРУЖЕНИЯ КИТОВ!) ===
+        
+        # Basic volume indicators using percentage changes
+        df['volume_sma_change'] = df['volume_change'].rolling(window=20).mean()
+        df['volume_ema_change'] = df['volume_change'].ewm(span=20).mean()
+        
+        # MAVOL - Moving Average of Volume (percentage changes)
+        df['mavol_5'] = df['volume_change'].rolling(window=5).mean()
+        df['mavol_10'] = df['volume_change'].rolling(window=10).mean()
+        df['mavol_20'] = df['volume_change'].rolling(window=20).mean()
+        df['mavol_50'] = df['volume_change'].rolling(window=50).mean()
+        
+        # Volume-weighted price changes
         try:
-            df['vwap'] = ta.volume.volume_weighted_average_price(df['high'], df['low'], df['close'], df['volume'])
+            # VWAP using percentage changes
+            df['vwap_change'] = ta.volume.volume_weighted_average_price(df['high_change'], df['low_change'], df['price_change'], df['volume'])
         except:
-            # Fallback VWAP calculation
-            df['vwap'] = (df['close'] * df['volume']).rolling(window=20).sum() / df['volume'].rolling(window=20).sum()
+            # Fallback VWAP calculation using percentage changes
+            df['vwap_change'] = (df['price_change'] * df['volume']).rolling(window=20).sum() / df['volume'].rolling(window=20).sum()
+        
+        # OBV - On Balance Volume using percentage changes
+        try:
+            df['obv_change'] = ta.volume.on_balance_volume(df['price_change'], df['volume_change'])
+        except:
+            # Fallback OBV using percentage changes
+            obv_change = [0]
+            for i in range(1, len(df)):
+                if df['price_change'].iloc[i] > 0:
+                    obv_change.append(obv_change[-1] + df['volume_change'].iloc[i])
+                elif df['price_change'].iloc[i] < 0:
+                    obv_change.append(obv_change[-1] - df['volume_change'].iloc[i])
+                else:
+                    obv_change.append(obv_change[-1])
+            df['obv_change'] = obv_change
+        
+        # OBV trend using percentage changes
+        df['obv_ema_change'] = df['obv_change'].ewm(span=20).mean()
+        df['obv_signal_change'] = (df['obv_change'] - df['obv_ema_change']) / (df['obv_ema_change'].abs() + 1e-8)
+        
+        # CMF - Chaikin Money Flow using percentage changes
+        try:
+            df['cmf_change'] = ta.volume.chaikin_money_flow(df['high_change'], df['low_change'], df['price_change'], df['volume_change'], window=20)
+        except:
+            # Fallback CMF using percentage changes
+            mfv_change = ((df['price_change'] - df['low_change']) - (df['high_change'] - df['price_change'])) / (df['high_change'] - df['low_change'] + 1e-8) * df['volume_change']
+            df['cmf_change'] = mfv_change.rolling(window=20).sum() / df['volume_change'].rolling(window=20).sum()
+        
+        # MFI - Money Flow Index using percentage changes
+        try:
+            df['mfi_change'] = ta.volume.money_flow_index(df['high_change'], df['low_change'], df['price_change'], df['volume_change'], window=14)
+        except:
+            # Fallback MFI using percentage changes
+            typical_price_change = (df['high_change'] + df['low_change'] + df['price_change']) / 3
+            money_flow_change = typical_price_change * df['volume_change']
+            
+            # Positive and negative money flow using percentage changes
+            positive_flow_change = []
+            negative_flow_change = []
+            for i in range(1, len(df)):
+                if typical_price_change.iloc[i] > typical_price_change.iloc[i-1]:
+                    positive_flow_change.append(money_flow_change.iloc[i])
+                    negative_flow_change.append(0)
+                else:
+                    positive_flow_change.append(0)
+                    negative_flow_change.append(money_flow_change.iloc[i])
+            
+            positive_flow_change = [0] + positive_flow_change
+            negative_flow_change = [0] + negative_flow_change
+            
+            df['positive_mf_change'] = positive_flow_change
+            df['negative_mf_change'] = negative_flow_change
+            
+            positive_mf_sum_change = df['positive_mf_change'].rolling(window=14).sum()
+            negative_mf_sum_change = df['negative_mf_change'].rolling(window=14).sum()
+            
+            mfi_change = 100 - (100 / (1 + positive_mf_sum_change / (negative_mf_sum_change + 1e-8)))
+            df['mfi_change'] = mfi_change
+            df.drop(['positive_mf_change', 'negative_mf_change'], axis=1, inplace=True)
+        
+        # Volume spikes using percentage changes (обнаружение китов!)
+        df['volume_ratio_change'] = df['volume_change'] / (df['volume_sma_change'].abs() + 1e-8)
+        df['volume_spike_change'] = (df['volume_ratio_change'].abs() > 2.0).astype(int)  # Объем > 2x среднего
+        
+        # Force Index using percentage changes (сила движения с учетом объема)
+        df['force_index_change'] = df['price_change'].diff() * df['volume_change']
+        df['force_index_ema_change'] = df['force_index_change'].ewm(span=13).mean()
+        
+        # Ease of Movement using percentage changes (легкость движения цены относительно объема)
+        distance_change = ((df['high_change'] + df['low_change']) / 2).diff()
+        box_ratio_change = df['volume_change'] / (df['high_change'] - df['low_change'] + 1e-8)
+        df['ease_of_movement_change'] = distance_change / (box_ratio_change + 1e-8)
+        df['ease_of_movement_ema_change'] = df['ease_of_movement_change'].ewm(span=14).mean()
+        
+        # Volume-Price Trend using percentage changes (VPT)
+        df['vpt_change'] = (df['price_change'] * df['volume_change']).cumsum()
+        df['vpt_signal_change'] = df['vpt_change'] - df['vpt_change'].rolling(window=20).mean()
+        
+        # Accumulation/Distribution Line using percentage changes (A/D)
+        try:
+            df['ad_change'] = ta.volume.acc_dist_index(df['high_change'], df['low_change'], df['price_change'], df['volume_change'])
+        except:
+            clv_change = ((df['price_change'] - df['low_change']) - (df['high_change'] - df['price_change'])) / (df['high_change'] - df['low_change'] + 1e-8)
+            df['ad_change'] = (clv_change * df['volume_change']).cumsum()
+        
+        df['ad_ema_change'] = df['ad_change'].ewm(span=20).mean()
+        df['ad_signal_change'] = (df['ad_change'] - df['ad_ema_change']) / (df['ad_ema_change'].abs() + 1e-8)
         
         try:
-            # Volatility indicators
-            df['atr'] = ta.volatility.average_true_range(df['high'], df['low'], df['close'])
+            # Volatility indicators using percentage changes
+            df['atr_change'] = ta.volatility.average_true_range(df['high_change'], df['low_change'], df['price_change'])
         except Exception as e:
             print(f"Warning: Error calculating ATR: {e}")
-            # Fallback ATR calculation
-            high_low = df['high'] - df['low']
-            high_close = np.abs(df['high'] - df['close'].shift())
-            low_close = np.abs(df['low'] - df['close'].shift())
-            true_range = np.maximum(high_low, np.maximum(high_close, low_close))
-            df['atr'] = true_range.rolling(window=14).mean()
+            # Fallback ATR calculation using percentage changes
+            high_low_change = df['high_change'] - df['low_change']
+            high_close_change = np.abs(df['high_change'] - df['price_change'].shift())
+            low_close_change = np.abs(df['low_change'] - df['price_change'].shift())
+            true_range_change = np.maximum(high_low_change, np.maximum(high_close_change, low_close_change))
+            df['atr_change'] = true_range_change.rolling(window=14).mean()
         
-        # Price changes and returns
-        df['price_change'] = df['close'].pct_change()
-        df['high_low_ratio'] = df['high'] / (df['low'] + 1e-8)
-        df['close_open_ratio'] = df['close'] / (df['open'] + 1e-8)
+        # Additional price change ratios
+        df['high_low_ratio_change'] = df['high_change'] / (df['low_change'] + 1e-8)
+        df['close_open_ratio_change'] = df['price_change'] / (df['open_change'] + 1e-8)
         
-        # Rolling statistics
+        # Rolling statistics using percentage changes
         for window in [5, 10, 20]:
             df[f'return_std_{window}'] = df['price_change'].rolling(window).std()
-            df[f'volume_std_{window}'] = df['volume'].rolling(window).std()
-            df[f'price_max_{window}'] = df['close'].rolling(window).max()
-            df[f'price_min_{window}'] = df['close'].rolling(window).min()
+            df[f'volume_std_{window}'] = df['volume_change'].rolling(window).std()
+            df[f'price_max_{window}'] = df['price_change'].rolling(window).max()
+            df[f'price_min_{window}'] = df['price_change'].rolling(window).min()
+            df[f'volume_max_{window}'] = df['volume_change'].rolling(window).max()
+            df[f'volume_min_{window}'] = df['volume_change'].rolling(window).min()
         
         return df
     
     def create_price_targets(self, df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
         """
         Create price prediction targets for the given timeframe.
+        Now works with percentage changes for better generalization.
         
         Args:
             df: DataFrame with price data
@@ -176,17 +296,24 @@ class CryptoDataPreprocessor:
         df = df.copy()
         horizon = self.prediction_horizons.get(timeframe, 1)
         
-        # Future price
-        df['future_close'] = df['close'].shift(-horizon)
+        # Future price change (percentage)
+        df['future_price_change'] = df['price_change'].shift(-horizon)
         
-        # Price change (percentage)
-        df['target_price_change'] = (df['future_close'] - df['close']) / df['close']
+        # Cumulative price change over horizon
+        df['target_price_change'] = df['price_change'].rolling(horizon).sum().shift(-horizon)
         
         # Price direction (classification target)
         df['target_direction'] = (df['target_price_change'] > 0).astype(int)
         
-        # Volatility target (for risk assessment)
+        # Volatility target (for risk assessment) - using percentage changes
         df['target_volatility'] = df['price_change'].rolling(horizon).std().shift(-horizon)
+        
+        # Additional targets for probability distribution
+        # Price change magnitude (absolute value)
+        df['target_price_magnitude'] = df['target_price_change'].abs()
+        
+        # Price change percentile (for distribution modeling)
+        df['target_price_percentile'] = df['target_price_change'].rolling(window=100, min_periods=50).rank(pct=True).shift(-horizon)
         
         return df
     
@@ -203,7 +330,8 @@ class CryptoDataPreprocessor:
         # Select feature columns (exclude timestamp, targets, and raw OHLCV)
         exclude_cols = [
             'timestamp', 'open', 'high', 'low', 'close', 'volume', 'turnover',
-            'future_close', 'target_price_change', 'target_direction', 'target_volatility'
+            'future_price_change', 'target_price_change', 'target_direction', 'target_volatility',
+            'target_price_magnitude', 'target_price_percentile'
         ]
         
         feature_cols = [col for col in df.columns if col not in exclude_cols]
@@ -325,7 +453,8 @@ class CryptoDataPreprocessor:
         
         # Convert to numpy arrays
         features = features_df.values
-        targets = df_processed[['target_price_change', 'target_direction', 'target_volatility']].values
+        targets = df_processed[['target_price_change', 'target_direction', 'target_volatility', 
+                              'target_price_magnitude', 'target_price_percentile']].values
         
         # Remove rows with NaN targets (at the end due to future shift)
         valid_mask = ~np.isnan(targets).any(axis=1)

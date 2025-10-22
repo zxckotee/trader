@@ -16,6 +16,7 @@ sys.path.append(str(Path(__file__).parent / 'src'))
 from src.data.bybit_parser import BybitParser
 from src.data.preprocessor import CryptoDataPreprocessor
 from src.models.moe_model import MoECryptoPredictor
+from src.models.enhanced_moe_model import EnhancedMoECryptoPredictor, create_enhanced_moe_model
 from src.training.trainer import MoETrainer, CryptoDataset, create_trainer_config
 from src.utils.config import load_config
 
@@ -51,6 +52,8 @@ def parse_args():
                        help='Force CPU usage even if GPU is available')
     parser.add_argument('--resume', '--checkpoint', type=str, 
                        help='Path to checkpoint to resume training from')
+    parser.add_argument('--keep-checkpoints', type=int, 
+                       help='Number of recent checkpoints to keep (0 = keep all, default: 10)')
     
     return parser.parse_args()
 
@@ -255,22 +258,52 @@ def prepare_datasets(data_dict, config):
 
 
 def create_model(input_dim, timeframes, config):
-    """Create MoE model."""
+    """Create enhanced MoE model with probability distributions."""
     print("\n=== Model Creation ===")
     
-    model = MoECryptoPredictor(
-        input_dim=input_dim,
-        timeframes=timeframes,
-        expert_config={
-            'hidden_dim': config.get('model.hidden_dim', 256),
-            'num_layers': config.get('model.num_layers', 4),
-            'num_heads': config.get('model.num_heads', 8),
-            'dropout': config.get('model.dropout', 0.1)
-        },
-        use_gating=config.get('model.use_gating', True)
-    )
+    expert_config = {
+        'hidden_dim': config.get('model.hidden_dim', 256),
+        'num_layers': config.get('model.num_layers', 4),
+        'num_heads': config.get('model.num_heads', 8),
+        'dropout': config.get('model.dropout', 0.1)
+    }
     
-    print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters")
+    # Add feedforward_dim if specified
+    if config.get('model.feedforward_dim'):
+        expert_config['feedforward_dim'] = config.get('model.feedforward_dim')
+    
+    # Use enhanced model with probability distributions
+    use_probability_distribution = config.get('model.use_probability_distribution', True)
+    num_bins = config.get('model.num_bins', 100)
+    
+    if use_probability_distribution:
+        model = create_enhanced_moe_model(
+            input_dim=input_dim,
+            timeframes=timeframes,
+            expert_config=expert_config,
+            use_gating=config.get('model.use_gating', True),
+            use_probability_distribution=True,
+            num_bins=num_bins
+        )
+        print("✅ Using enhanced MoE model with probability distributions")
+    else:
+        model = MoECryptoPredictor(
+            input_dim=input_dim,
+            timeframes=timeframes,
+            expert_config=expert_config,
+            use_gating=config.get('model.use_gating', True)
+        )
+        print("✅ Using standard MoE model")
+    
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Model created with {total_params:,} total parameters")
+    print(f"Trainable parameters: {trainable_params:,} ({trainable_params/1e6:.1f}M)")
+    print(f"Model size: ~{total_params * 4 / (1024**3):.2f} GB (float32)")
+    
+    if use_probability_distribution:
+        print(f"Probability distribution bins: {num_bins}")
+        print("🔮 Model can predict probability distributions and detect sinusoidal patterns")
     
     return model
 
@@ -313,6 +346,8 @@ def main():
         config.set('training.device', args.device)
     if args.force_cpu:
         config.set('training.force_cpu', True)
+    if args.keep_checkpoints is not None:
+        config.set('training.keep_last_n_checkpoints', args.keep_checkpoints)
     
     print("=== MoE Cryptocurrency Prediction Model Training ===")
     print(f"Symbols: {config.get('data.symbols')}")
@@ -352,6 +387,9 @@ def main():
         'batch_size': config.get('training.batch_size'),
         'learning_rate': config.get('training.learning_rate'),
         'output_dir': config.get('paths.model_dir'),
+        'keep_last_n_checkpoints': config.get('training.keep_last_n_checkpoints', 10),
+        'early_stopping': config.get('training.early_stopping', True),
+        'early_stopping_patience': config.get('training.early_stopping_patience', 50),
         'price_weight': config.get('loss.price_weight'),
         'direction_weight': config.get('loss.direction_weight'),
         'volatility_weight': config.get('loss.volatility_weight'),
