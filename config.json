@@ -13,17 +13,17 @@
     }
   },
     "model": {
-        "hidden_dim": 384,
-        "num_layers": 8,
+        "hidden_dim": 512,
+        "num_layers": 10,
         "num_heads": 8,
         "dropout": 0.15,
         "use_gating": true,
-        "feedforward_dim": 1536,
+        "feedforward_dim": 2048,
         "use_probability_distribution": true,
-        "num_bins": 75,
-        "total_parameters": "~52M",
-        "model_size_gb": "~0.2 (FP16)",
-        "vram_usage": "~0.5GB (FP16) + gradient checkpointing = ~0.4GB"
+        "num_bins": 100,
+        "total_parameters": "~150M",
+        "model_size_gb": "~0.6 (FP16)",
+        "vram_usage": "~1.5GB (FP16) + gradient checkpointing = ~1.2GB"
     },
   "training": {
     "batch_size": 16,
