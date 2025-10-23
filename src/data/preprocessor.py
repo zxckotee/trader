@@ -27,7 +27,8 @@ class CryptoDataPreprocessor:
     def __init__(self, 
                  sequence_length: int = 100,
                  prediction_horizons: Dict[str, int] = None,
-                 scaler_type: str = 'standard'):
+                 scaler_type: str = 'standard',
+                 verbose: bool = False):
         """
         Initialize the preprocessor.
         
@@ -35,6 +36,7 @@ class CryptoDataPreprocessor:
             sequence_length: Length of input sequences
             prediction_horizons: Dict mapping timeframes to prediction steps ahead
             scaler_type: Type of scaler ('standard' or 'minmax')
+            verbose: Print diagnostic information
         """
         self.sequence_length = sequence_length
         self.prediction_horizons = prediction_horizons or {
@@ -46,6 +48,7 @@ class CryptoDataPreprocessor:
         }
         
         self.scaler_type = scaler_type
+        self.verbose = verbose
         self.scalers = {}
         self.feature_columns = []
         
@@ -365,18 +368,38 @@ class CryptoDataPreprocessor:
         price_change_clean = df['price_change'].fillna(0)
         df['target_price_change'] = price_change_clean.rolling(horizon).sum().shift(-horizon)
         
+        # Clip extreme values (percentage changes should be reasonable)
+        # Crypto can have extreme moves, but > 100% in one horizon is rare
+        df['target_price_change'] = df['target_price_change'].clip(-1.0, 1.0)
+        
         # Price direction (classification target)
         df['target_direction'] = (df['target_price_change'] > 0).astype(int)
         
         # Volatility target (for risk assessment) - using percentage changes
         df['target_volatility'] = df['price_change'].rolling(horizon).std().shift(-horizon)
+        # Clip volatility to reasonable range (0 to 50%)
+        df['target_volatility'] = df['target_volatility'].clip(0, 0.5)
         
         # Additional targets for probability distribution
         # Price change magnitude (absolute value)
         df['target_price_magnitude'] = df['target_price_change'].abs()
+        # Magnitude is already clipped via target_price_change
         
         # Price change percentile (for distribution modeling)
         df['target_price_percentile'] = df['target_price_change'].rolling(window=100, min_periods=50).rank(pct=True).shift(-horizon)
+        # Percentile should be in [0, 1] by definition, but ensure it
+        df['target_price_percentile'] = df['target_price_percentile'].clip(0, 1)
+        
+        # Diagnostic: Print statistics (only if verbose)
+        if hasattr(self, 'verbose') and self.verbose:
+            print(f"\n[{timeframe}] Target statistics:")
+            print(f"  target_price_change: min={df['target_price_change'].min():.4f}, "
+                  f"max={df['target_price_change'].max():.4f}, "
+                  f"mean={df['target_price_change'].mean():.4f}, "
+                  f"std={df['target_price_change'].std():.4f}")
+            print(f"  target_volatility: min={df['target_volatility'].min():.4f}, "
+                  f"max={df['target_volatility'].max():.4f}, "
+                  f"mean={df['target_volatility'].mean():.4f}")
         
         return df
     
