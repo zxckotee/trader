@@ -6,7 +6,13 @@ Handles feature engineering, normalization, and sequence preparation for MoE mod
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional
-import ta
+import warnings
+
+# Suppress warnings from ta library
+with warnings.catch_warnings():
+    warnings.filterwarnings('ignore', category=RuntimeWarning)
+    import ta
+
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from pathlib import Path
 import pickle
@@ -63,6 +69,13 @@ class CryptoDataPreprocessor:
         df['low_change'] = df['low'].pct_change()
         df['open_change'] = df['open'].pct_change()
         
+        # Handle NaN values in percentage changes to prevent accumulation warnings
+        df['price_change'] = df['price_change'].fillna(0)
+        df['volume_change'] = df['volume_change'].fillna(0)
+        df['high_change'] = df['high_change'].fillna(0)
+        df['low_change'] = df['low_change'].fillna(0)
+        df['open_change'] = df['open_change'].fillna(0)
+        
         # Price range changes
         df['hl_change'] = (df['high'] - df['low']) / (df['close'].shift(1) + 1e-8)
         df['co_change'] = (df['close'] - df['open']) / (df['open'] + 1e-8)
@@ -89,7 +102,8 @@ class CryptoDataPreprocessor:
         
         try:
             # Bollinger Bands using percentage changes
-            bb = ta.volatility.BollingerBands(df['price_change'])
+            price_clean = df['price_change'].fillna(0)
+            bb = ta.volatility.BollingerBands(price_clean)
             df['bb_upper_change'] = bb.bollinger_hband()
             df['bb_middle_change'] = bb.bollinger_mavg()
             df['bb_lower_change'] = bb.bollinger_lband()
@@ -108,7 +122,8 @@ class CryptoDataPreprocessor:
         
         try:
             # RSI using percentage changes
-            df['rsi_change'] = ta.momentum.rsi(df['price_change'], window=14)
+            price_clean = df['price_change'].fillna(0)
+            df['rsi_change'] = ta.momentum.rsi(price_clean, window=14)
         except Exception as e:
             print(f"Warning: Error calculating RSI: {e}")
             # Fallback RSI calculation using percentage changes
@@ -120,7 +135,8 @@ class CryptoDataPreprocessor:
         
         try:
             # MACD using percentage changes
-            macd = ta.trend.MACD(df['price_change'])
+            price_clean = df['price_change'].fillna(0)
+            macd = ta.trend.MACD(price_clean)
             df['macd_change'] = macd.macd()
             df['macd_signal_change'] = macd.macd_signal()
             df['macd_histogram_change'] = macd.macd_diff()
@@ -135,7 +151,10 @@ class CryptoDataPreprocessor:
         
         try:
             # Stochastic Oscillator using percentage changes
-            stoch = ta.momentum.StochasticOscillator(df['high_change'], df['low_change'], df['price_change'])
+            high_clean = df['high_change'].fillna(0)
+            low_clean = df['low_change'].fillna(0)
+            price_clean = df['price_change'].fillna(0)
+            stoch = ta.momentum.StochasticOscillator(high_clean, low_clean, price_clean)
             df['stoch_k_change'] = stoch.stoch()
             df['stoch_d_change'] = stoch.stoch_signal()
         except Exception as e:
@@ -162,22 +181,38 @@ class CryptoDataPreprocessor:
         # Volume-weighted price changes
         try:
             # VWAP using percentage changes
-            df['vwap_change'] = ta.volume.volume_weighted_average_price(df['high_change'], df['low_change'], df['price_change'], df['volume'])
+            high_clean = df['high_change'].fillna(0)
+            low_clean = df['low_change'].fillna(0)
+            price_clean = df['price_change'].fillna(0)
+            volume_clean = df['volume'].fillna(0)
+            df['vwap_change'] = ta.volume.volume_weighted_average_price(high_clean, low_clean, price_clean, volume_clean)
         except:
-            # Fallback VWAP calculation using percentage changes
-            df['vwap_change'] = (df['price_change'] * df['volume']).rolling(window=20).sum() / df['volume'].rolling(window=20).sum()
+            # Fallback VWAP calculation using percentage changes with NaN handling
+            price_volume_product = df['price_change'] * df['volume']
+            price_volume_product = price_volume_product.fillna(0)
+            volume_clean = df['volume'].fillna(0)
+            df['vwap_change'] = price_volume_product.rolling(window=20).sum() / volume_clean.rolling(window=20).sum()
         
         # OBV - On Balance Volume using percentage changes
         try:
-            df['obv_change'] = ta.volume.on_balance_volume(df['price_change'], df['volume_change'])
+            # Clean data before ta functions
+            price_clean = df['price_change'].fillna(0)
+            volume_clean = df['volume_change'].fillna(0)
+            df['obv_change'] = ta.volume.on_balance_volume(price_clean, volume_clean)
         except:
-            # Fallback OBV using percentage changes
+            # Fallback OBV using percentage changes with NaN handling
             obv_change = [0]
             for i in range(1, len(df)):
-                if df['price_change'].iloc[i] > 0:
-                    obv_change.append(obv_change[-1] + df['volume_change'].iloc[i])
-                elif df['price_change'].iloc[i] < 0:
-                    obv_change.append(obv_change[-1] - df['volume_change'].iloc[i])
+                price_val = df['price_change'].iloc[i]
+                volume_val = df['volume_change'].iloc[i]
+                
+                # Handle NaN values
+                if pd.isna(price_val) or pd.isna(volume_val):
+                    obv_change.append(obv_change[-1])
+                elif price_val > 0:
+                    obv_change.append(obv_change[-1] + volume_val)
+                elif price_val < 0:
+                    obv_change.append(obv_change[-1] - volume_val)
                 else:
                     obv_change.append(obv_change[-1])
             df['obv_change'] = obv_change
@@ -188,15 +223,27 @@ class CryptoDataPreprocessor:
         
         # CMF - Chaikin Money Flow using percentage changes
         try:
-            df['cmf_change'] = ta.volume.chaikin_money_flow(df['high_change'], df['low_change'], df['price_change'], df['volume_change'], window=20)
+            # Clean data before ta functions
+            high_clean = df['high_change'].fillna(0)
+            low_clean = df['low_change'].fillna(0)
+            price_clean = df['price_change'].fillna(0)
+            volume_clean = df['volume_change'].fillna(0)
+            df['cmf_change'] = ta.volume.chaikin_money_flow(high_clean, low_clean, price_clean, volume_clean, window=20)
         except:
-            # Fallback CMF using percentage changes
+            # Fallback CMF using percentage changes with NaN handling
             mfv_change = ((df['price_change'] - df['low_change']) - (df['high_change'] - df['price_change'])) / (df['high_change'] - df['low_change'] + 1e-8) * df['volume_change']
-            df['cmf_change'] = mfv_change.rolling(window=20).sum() / df['volume_change'].rolling(window=20).sum()
+            mfv_change = mfv_change.fillna(0)
+            volume_change_clean = df['volume_change'].fillna(0)
+            df['cmf_change'] = mfv_change.rolling(window=20).sum() / volume_change_clean.rolling(window=20).sum()
         
         # MFI - Money Flow Index using percentage changes
         try:
-            df['mfi_change'] = ta.volume.money_flow_index(df['high_change'], df['low_change'], df['price_change'], df['volume_change'], window=14)
+            # Clean data before ta functions
+            high_clean = df['high_change'].fillna(0)
+            low_clean = df['low_change'].fillna(0)
+            price_clean = df['price_change'].fillna(0)
+            volume_clean = df['volume_change'].fillna(0)
+            df['mfi_change'] = ta.volume.money_flow_index(high_clean, low_clean, price_clean, volume_clean, window=14)
         except:
             # Fallback MFI using percentage changes
             typical_price_change = (df['high_change'] + df['low_change'] + df['price_change']) / 3
@@ -219,8 +266,8 @@ class CryptoDataPreprocessor:
             df['positive_mf_change'] = positive_flow_change
             df['negative_mf_change'] = negative_flow_change
             
-            positive_mf_sum_change = df['positive_mf_change'].rolling(window=14).sum()
-            negative_mf_sum_change = df['negative_mf_change'].rolling(window=14).sum()
+            positive_mf_sum_change = df['positive_mf_change'].fillna(0).rolling(window=14).sum()
+            negative_mf_sum_change = df['negative_mf_change'].fillna(0).rolling(window=14).sum()
             
             mfi_change = 100 - (100 / (1 + positive_mf_sum_change / (negative_mf_sum_change + 1e-8)))
             df['mfi_change'] = mfi_change
@@ -241,22 +288,37 @@ class CryptoDataPreprocessor:
         df['ease_of_movement_ema_change'] = df['ease_of_movement_change'].ewm(span=14).mean()
         
         # Volume-Price Trend using percentage changes (VPT)
-        df['vpt_change'] = (df['price_change'] * df['volume_change']).cumsum()
+        # VPT - Volume Price Trend using percentage changes with NaN handling
+        vpt_product = df['price_change'] * df['volume_change']
+        vpt_product = vpt_product.fillna(0)  # Replace NaN with 0
+        df['vpt_change'] = vpt_product.cumsum()
         df['vpt_signal_change'] = df['vpt_change'] - df['vpt_change'].rolling(window=20).mean()
         
         # Accumulation/Distribution Line using percentage changes (A/D)
         try:
-            df['ad_change'] = ta.volume.acc_dist_index(df['high_change'], df['low_change'], df['price_change'], df['volume_change'])
+            # Clean data before ta functions
+            high_clean = df['high_change'].fillna(0)
+            low_clean = df['low_change'].fillna(0)
+            price_clean = df['price_change'].fillna(0)
+            volume_clean = df['volume_change'].fillna(0)
+            df['ad_change'] = ta.volume.acc_dist_index(high_clean, low_clean, price_clean, volume_clean)
         except:
+            # Fallback A/D calculation using percentage changes with NaN handling
             clv_change = ((df['price_change'] - df['low_change']) - (df['high_change'] - df['price_change'])) / (df['high_change'] - df['low_change'] + 1e-8)
-            df['ad_change'] = (clv_change * df['volume_change']).cumsum()
+            clv_change = clv_change.fillna(0)  # Replace NaN with 0
+            ad_product = clv_change * df['volume_change']
+            ad_product = ad_product.fillna(0)  # Replace NaN with 0
+            df['ad_change'] = ad_product.cumsum()
         
         df['ad_ema_change'] = df['ad_change'].ewm(span=20).mean()
         df['ad_signal_change'] = (df['ad_change'] - df['ad_ema_change']) / (df['ad_ema_change'].abs() + 1e-8)
         
         try:
             # Volatility indicators using percentage changes
-            df['atr_change'] = ta.volatility.average_true_range(df['high_change'], df['low_change'], df['price_change'])
+            high_clean = df['high_change'].fillna(0)
+            low_clean = df['low_change'].fillna(0)
+            price_clean = df['price_change'].fillna(0)
+            df['atr_change'] = ta.volatility.average_true_range(high_clean, low_clean, price_clean)
         except Exception as e:
             print(f"Warning: Error calculating ATR: {e}")
             # Fallback ATR calculation using percentage changes
@@ -299,8 +361,9 @@ class CryptoDataPreprocessor:
         # Future price change (percentage)
         df['future_price_change'] = df['price_change'].shift(-horizon)
         
-        # Cumulative price change over horizon
-        df['target_price_change'] = df['price_change'].rolling(horizon).sum().shift(-horizon)
+        # Cumulative price change over horizon with NaN handling
+        price_change_clean = df['price_change'].fillna(0)
+        df['target_price_change'] = price_change_clean.rolling(horizon).sum().shift(-horizon)
         
         # Price direction (classification target)
         df['target_direction'] = (df['target_price_change'] > 0).astype(int)

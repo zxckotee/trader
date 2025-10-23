@@ -342,7 +342,7 @@ class MoETrainer:
             
             # Debug: Print first batch statistics
             if first_batch:
-                print(f"\n🔍 First batch diagnostics:")
+                print(f"\n[*] First batch diagnostics:")
                 print(f"   Price change range: [{targets['price_change'].min():.6f}, {targets['price_change'].max():.6f}]")
                 print(f"   Price change mean: {targets['price_change'].mean():.6f}, std: {targets['price_change'].std():.6f}")
                 print(f"   Volatility range: [{targets['volatility'].min():.6f}, {targets['volatility'].max():.6f}]")
@@ -480,59 +480,67 @@ class MoETrainer:
         
         start_time = time.time()
         
-        for epoch in range(self.start_epoch, self.config['num_epochs']):
-            print(f"\nEpoch {epoch+1}/{self.config['num_epochs']}")
-            
-            # Train
-            train_metrics = self.train_epoch()
-            
-            # Validate
-            val_metrics = self.validate_epoch()
-            
-            # Update history
-            self.history['train_loss'].append(train_metrics['train_loss'])
-            self.history['val_loss'].append(val_metrics['val_loss'])
-            self.history['train_price_loss'].append(train_metrics['train_price_loss'])
-            self.history['val_price_loss'].append(val_metrics['val_price_loss'])
-            self.history['train_direction_acc'].append(train_metrics['train_direction_acc'])
-            self.history['val_direction_acc'].append(val_metrics['val_direction_acc'])
-            self.history['learning_rate'].append(self.optimizer.param_groups[0]['lr'])
-            
-            # Print metrics
-            print(f"Train Loss: {train_metrics['train_loss']:.4f}, "
-                  f"Val Loss: {val_metrics['val_loss']:.4f}")
-            print(f"Train Dir Acc: {train_metrics['train_direction_acc']:.4f}, "
-                  f"Val Dir Acc: {val_metrics['val_direction_acc']:.4f}")
-            print(f"Val R2: {val_metrics['val_r2']:.4f}")
-            
-            # Save checkpoint after every epoch
-            is_best = False
-            if val_metrics['val_loss'] < self.best_val_loss:
-                self.best_val_loss = val_metrics['val_loss']
-                self.best_model_state = self.model.state_dict().copy()
-                is_best = True
-                print("🏆 New best model!")
-            
-            # Save checkpoint (always, but mark if best)
-            self.save_checkpoint(epoch, is_best=is_best)
-            
-            # Save training history and plots after each epoch
-            self.save_training_history()
-            self.plot_training_history()
-            
-            # Learning rate scheduling
-            if self.scheduler:
-                if isinstance(self.scheduler, ReduceLROnPlateau):
-                    self.scheduler.step(val_metrics['val_loss'])
-                else:
-                    self.scheduler.step()
-            
-            # Early stopping
-            if self.config.get('early_stopping'):
-                patience = self.config.get('early_stopping_patience', 20)
-                if epoch - self.get_best_epoch() > patience:
-                    print(f"Early stopping after {patience} epochs without improvement")
-                    break
+        try:
+            for epoch in range(self.start_epoch, self.config['num_epochs']):
+                print(f"\nEpoch {epoch+1}/{self.config['num_epochs']}")
+                
+                # Train
+                train_metrics = self.train_epoch()
+                
+                # Validate
+                val_metrics = self.validate_epoch()
+                
+                # Update history
+                self.history['train_loss'].append(train_metrics['train_loss'])
+                self.history['val_loss'].append(val_metrics['val_loss'])
+                self.history['train_price_loss'].append(train_metrics['train_price_loss'])
+                self.history['val_price_loss'].append(val_metrics['val_price_loss'])
+                self.history['train_direction_acc'].append(train_metrics['train_direction_acc'])
+                self.history['val_direction_acc'].append(val_metrics['val_direction_acc'])
+                self.history['learning_rate'].append(self.optimizer.param_groups[0]['lr'])
+                
+                # Print metrics
+                print(f"Train Loss: {train_metrics['train_loss']:.4f}, "
+                      f"Val Loss: {val_metrics['val_loss']:.4f}")
+                print(f"Train Dir Acc: {train_metrics['train_direction_acc']:.4f}, "
+                      f"Val Dir Acc: {val_metrics['val_direction_acc']:.4f}")
+                print(f"Val R2: {val_metrics['val_r2']:.4f}")
+                
+                # Save checkpoint after every epoch
+                is_best = False
+                if val_metrics['val_loss'] < self.best_val_loss:
+                    self.best_val_loss = val_metrics['val_loss']
+                    self.best_model_state = self.model.state_dict().copy()
+                    is_best = True
+                    print("[+] New best model!")
+                
+                # Save checkpoint (always, but mark if best)
+                self.save_checkpoint(epoch, is_best=is_best)
+                
+                # Save training history and plots after each epoch
+                self.save_training_history()
+                self.plot_training_history()
+                
+                # Learning rate scheduling
+                if self.scheduler:
+                    if isinstance(self.scheduler, ReduceLROnPlateau):
+                        self.scheduler.step(val_metrics['val_loss'])
+                    else:
+                        self.scheduler.step()
+                
+                # Early stopping
+                if self.config.get('early_stopping'):
+                    patience = self.config.get('early_stopping_patience', 20)
+                    if epoch - self.get_best_epoch() > patience:
+                        print(f"Early stopping after {patience} epochs without improvement")
+                        break
+        
+        except KeyboardInterrupt:
+            print("\n\n[!] Training interrupted by user (Ctrl+C)")
+            print(f"[*] Saving checkpoint at epoch {epoch+1}...")
+            self.save_checkpoint(epoch, is_best=False)
+            print("[*] Checkpoint saved. You can resume training later.")
+            raise  # Re-raise to propagate to main
         
         training_time = time.time() - start_time
         print(f"\nTraining completed in {training_time:.2f} seconds")

@@ -146,7 +146,7 @@ class DeviceManager:
     
     def print_device_info(self, device: torch.device) -> None:
         """Print detailed device information."""
-        print(f"🖥️  Device Information:")
+        print(f"Device Information:")
         print(f"   Selected device: {device}")
         print(f"   CUDA available: {self.cuda_available}")
         

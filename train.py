@@ -9,6 +9,29 @@ from pathlib import Path
 import torch
 import numpy as np
 from sklearn.model_selection import train_test_split
+import multiprocessing
+
+# Fix multiprocessing on Windows and clear module cache
+if __name__ == '__main__':
+    multiprocessing.freeze_support()
+    
+    # Clear module cache to avoid caching issues
+    import sys
+    modules_to_clear = [k for k in list(sys.modules.keys()) if 'src' in k or 'models' in k or 'enhanced' in k or 'moe' in k]
+    for module in modules_to_clear:
+        if module in sys.modules:
+            del sys.modules[module]
+    
+    # Force reload of all modules
+    import importlib
+    importlib.invalidate_caches()
+    
+    # Force reload specific modules
+    try:
+        importlib.reload(sys.modules.get('src.models.enhanced_moe_model'))
+        importlib.reload(sys.modules.get('src.models.moe_model'))
+    except:
+        pass
 
 # Add src to path
 sys.path.append(str(Path(__file__).parent / 'src'))
@@ -25,7 +48,7 @@ def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Train MoE cryptocurrency prediction model')
     
-    parser.add_argument('--config', type=str, help='Path to configuration file')
+    parser.add_argument('--config', type=str, default='config.json', help='Path to configuration file')
     parser.add_argument('--symbols', nargs='+', 
                        help='Trading symbols to train on (default: auto-detect from CSV files)')
     parser.add_argument('--auto-symbols', action='store_true',
@@ -99,7 +122,7 @@ def auto_detect_symbols(data_dir: str, timeframes: list) -> list:
     data_path = Path(data_dir)
     symbols = set()
     
-    print(f"🔍 Поиск CSV файлов в {data_path}...")
+    print(f"Поиск CSV файлов в {data_path}...")
     
     # Ищем все CSV файлы
     csv_files = list(data_path.glob("*.csv"))
@@ -116,7 +139,7 @@ def auto_detect_symbols(data_dir: str, timeframes: list) -> list:
     
     symbols_list = sorted(list(symbols))
     
-    print(f"📊 Найдено символов: {len(symbols_list)}")
+    print(f"Найдено символов: {len(symbols_list)}")
     for symbol in symbols_list:
         # Проверяем, какие таймфреймы доступны для каждого символа
         available_tf = []
@@ -145,7 +168,7 @@ def load_all_symbol_data(symbols: list, timeframes: list, data_dir: str) -> dict
     parser = BybitParser(data_dir=data_dir)
     all_data = {}
     
-    print(f"\n📥 Загрузка данных для {len(symbols)} символов...")
+    print(f"\nЗагрузка данных для {len(symbols)} символов...")
     
     for symbol in symbols:
         symbol_data = {}
@@ -156,17 +179,17 @@ def load_all_symbol_data(symbols: list, timeframes: list, data_dir: str) -> dict
             if not df.empty:
                 symbol_data[timeframe] = df
                 total_records += len(df)
-                print(f"   ✅ {symbol} {timeframe}: {len(df):,} записей")
+                print(f"   [+] {symbol} {timeframe}: {len(df):,} записей")
             else:
-                print(f"   ⚠️ {symbol} {timeframe}: файл не найден или пуст")
+                print(f"   [!] {symbol} {timeframe}: файл не найден или пуст")
         
         if symbol_data:
             all_data[symbol] = symbol_data
-            print(f"   📊 {symbol} итого: {total_records:,} записей по {len(symbol_data)} таймфреймам")
+            print(f"   [*] {symbol} итого: {total_records:,} записей по {len(symbol_data)} таймфреймам")
         else:
-            print(f"   ❌ {symbol}: нет данных")
+            print(f"   [-] {symbol}: нет данных")
     
-    print(f"\n✅ Загружено данных для {len(all_data)} символов")
+    print(f"\n[+] Загружено данных для {len(all_data)} символов")
     return all_data
 
 
@@ -265,7 +288,9 @@ def create_model(input_dim, timeframes, config):
         'hidden_dim': config.get('model.hidden_dim', 256),
         'num_layers': config.get('model.num_layers', 4),
         'num_heads': config.get('model.num_heads', 8),
-        'dropout': config.get('model.dropout', 0.1)
+        'dropout': config.get('model.dropout', 0.1),
+        'use_probability_distribution': config.get('model.use_probability_distribution', True),
+        'num_bins': config.get('model.num_bins', 100)
     }
     
     # Add feedforward_dim if specified
@@ -285,7 +310,7 @@ def create_model(input_dim, timeframes, config):
             use_probability_distribution=True,
             num_bins=num_bins
         )
-        print("✅ Using enhanced MoE model with probability distributions")
+        print("[+] Using enhanced MoE model with probability distributions")
     else:
         model = MoECryptoPredictor(
             input_dim=input_dim,
@@ -293,7 +318,7 @@ def create_model(input_dim, timeframes, config):
             expert_config=expert_config,
             use_gating=config.get('model.use_gating', True)
         )
-        print("✅ Using standard MoE model")
+        print("[+] Using standard MoE model")
     
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -303,7 +328,7 @@ def create_model(input_dim, timeframes, config):
     
     if use_probability_distribution:
         print(f"Probability distribution bins: {num_bins}")
-        print("🔮 Model can predict probability distributions and detect sinusoidal patterns")
+        print("[*] Model can predict probability distributions and detect sinusoidal patterns")
     
     return model
 
@@ -432,11 +457,28 @@ def main():
         print("\nTraining completed successfully!")
         
     except KeyboardInterrupt:
-        print("\n\n⚠️  Training interrupted by user (Ctrl+C)")
-        print(f"💾 Last checkpoint saved: {config.get('paths.model_dir')}/checkpoint_epoch_*.pt")
-        print(f"💡 Resume training with: python train.py --resume {config.get('paths.model_dir')}/checkpoint_epoch_N.pt --epochs {config.get('training.num_epochs')}")
+        print("\n\n[!] Training interrupted by user (Ctrl+C)")
+        print(f"[*] Last checkpoint saved: {config.get('paths.model_dir')}/checkpoint_epoch_*.pt")
+        print(f"[*] Resume training with: python train.py --resume {config.get('paths.model_dir')}/checkpoint_epoch_N.pt --epochs {config.get('training.num_epochs')}")
+        return
+    except Exception as e:
+        print(f"\n[!] Error during training: {e}")
+        import traceback
+        traceback.print_exc()
         return
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n[!] Program interrupted by user (Ctrl+C)")
+        print("[*] Exiting gracefully...")
+        import sys
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n[!] Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
+        import sys
+        sys.exit(1)
