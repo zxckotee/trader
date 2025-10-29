@@ -27,14 +27,14 @@
     },
   "training": {
     "batch_size": 16,
-    "learning_rate": 0.00008,
-    "num_epochs": 300,
+    "learning_rate": 0.00005,
+    "num_epochs": 1000,
     "weight_decay": 0.01,
     "grad_clip": 1.0,
     "scheduler": "cosine",
-    "min_lr": 0.000001,
+    "min_lr": 0.000002,
     "early_stopping": true,
-    "early_stopping_patience": 50,
+    "early_stopping_patience": 100,
     "keep_last_n_checkpoints": 10,
     "train_split": 0.8,
     "val_split": 0.1,
@@ -45,12 +45,14 @@
     "gradient_accumulation_steps": 4
   },
   "loss": {
-    "price_weight": 1.0,
+    "price_weight": 3.0,
     "direction_weight": 2.0,
-    "volatility_weight": 0.5,
-    "magnitude_weight": 0.3,
-    "percentile_weight": 0.3,
-    "diversity_weight": 0.1
+    "consistency_weight": 2.0,
+    "volatility_weight": 0.3,
+    "magnitude_weight": 0.2,
+    "percentile_weight": 0.2,
+    "diversity_weight": 0.1,
+    "use_huber_loss": true
   },
   "lora": {
     "enabled": false,

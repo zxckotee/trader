@@ -415,10 +415,14 @@ def main():
         'keep_last_n_checkpoints': config.get('training.keep_last_n_checkpoints', 10),
         'early_stopping': config.get('training.early_stopping', True),
         'early_stopping_patience': config.get('training.early_stopping_patience', 50),
-        'price_weight': config.get('loss.price_weight'),
-        'direction_weight': config.get('loss.direction_weight'),
-        'volatility_weight': config.get('loss.volatility_weight'),
-        'diversity_weight': config.get('loss.diversity_weight')
+        'price_weight': config.get('loss.price_weight', 1.0),
+        'direction_weight': config.get('loss.direction_weight', 0.5),
+        'consistency_weight': config.get('loss.consistency_weight', 0.0),
+        'volatility_weight': config.get('loss.volatility_weight', 0.3),
+        'magnitude_weight': config.get('loss.magnitude_weight', 0.2),
+        'percentile_weight': config.get('loss.percentile_weight', 0.2),
+        'diversity_weight': config.get('loss.diversity_weight', 0.1),
+        'use_huber_loss': config.get('loss.use_huber_loss', False)
     })
     
     # Create trainer

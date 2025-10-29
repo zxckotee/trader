@@ -136,14 +136,16 @@ class MoETrainer:
             pin_memory=self.device_config['pin_memory']
         )
         
-        # Loss function
+        # Loss function with new consistency and Huber loss support
         self.criterion = MoELoss(
             price_weight=config.get('price_weight', 1.0),
             direction_weight=config.get('direction_weight', 0.5),
+            consistency_weight=config.get('consistency_weight', 0.0),  # NEW: по умолчанию выключено
             volatility_weight=config.get('volatility_weight', 0.3),
             magnitude_weight=config.get('magnitude_weight', 0.2),
             percentile_weight=config.get('percentile_weight', 0.2),
-            diversity_weight=config.get('diversity_weight', 0.1)
+            diversity_weight=config.get('diversity_weight', 0.1),
+            use_huber_loss=config.get('use_huber_loss', False)  # NEW: по умолчанию MSE
         )
         
         # Gradient accumulation
@@ -366,7 +368,8 @@ class MoETrainer:
                     if key != 'total_loss':
                         print(f"   {key}: {value.item():.2f}")
                 print(f"   total_loss: {loss_dict['total_loss'].item():.2f}")
-                print(f"   Loss weights: price={self.criterion.price_weight}, dir={self.criterion.direction_weight}, vol={self.criterion.volatility_weight}")
+                print(f"   Loss weights: price={self.criterion.price_weight}, dir={self.criterion.direction_weight}, consistency={self.criterion.consistency_weight}, vol={self.criterion.volatility_weight}")
+                print(f"   Huber Loss: {self.criterion.use_huber_loss}")
                 print(f"   Gradient accumulation steps: {self.gradient_accumulation_steps}\n")
                 self._first_epoch_logged = True
             

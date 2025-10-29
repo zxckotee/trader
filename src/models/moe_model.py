@@ -387,37 +387,51 @@ class MoECryptoPredictor(nn.Module):
 
 class MoELoss(nn.Module):
     """
-    Multi-task loss function for MoE model.
+    Multi-task loss function for MoE model with consistency between price and direction.
+    
+    BACKWARD COMPATIBLE: новые параметры имеют дефолтные значения, старые чекпоинты загружаются.
     """
     
     def __init__(self, 
                  price_weight: float = 1.0,
                  direction_weight: float = 0.5,
+                 consistency_weight: float = 0.0,      # NEW: по умолчанию выключено
                  volatility_weight: float = 0.3,
                  magnitude_weight: float = 0.2,
                  percentile_weight: float = 0.2,
-                 diversity_weight: float = 0.1):
+                 diversity_weight: float = 0.1,
+                 use_huber_loss: bool = False):          # NEW: по умолчанию MSE
         """
         Initialize loss function.
         
         Args:
             price_weight: Weight for price prediction loss
             direction_weight: Weight for direction classification loss
+            consistency_weight: Weight for consistency loss between price and direction (0 = disabled)
             volatility_weight: Weight for volatility prediction loss
             magnitude_weight: Weight for magnitude prediction loss
             percentile_weight: Weight for percentile prediction loss
             diversity_weight: Weight for expert diversity regularization
+            use_huber_loss: Use Huber Loss for price instead of MSE (more robust)
         """
         super().__init__()
         
         self.price_weight = price_weight
         self.direction_weight = direction_weight
+        self.consistency_weight = consistency_weight
         self.volatility_weight = volatility_weight
         self.magnitude_weight = magnitude_weight
         self.percentile_weight = percentile_weight
         self.diversity_weight = diversity_weight
+        self.use_huber_loss = use_huber_loss
         
-        self.mse_loss = nn.MSELoss()
+        # Использовать Huber Loss для price если включено, иначе MSE
+        if use_huber_loss:
+            self.price_loss_fn = nn.HuberLoss(delta=0.05)  # delta=0.05 для процентов
+        else:
+            self.price_loss_fn = nn.MSELoss()
+        
+        self.mse_loss = nn.MSELoss()  # Для других задач
         self.ce_loss = nn.CrossEntropyLoss()
     
     def forward(self, 
@@ -435,7 +449,7 @@ class MoELoss(nn.Module):
         """
         losses = {}
         
-        # Price prediction loss (MSE on logits)
+        # Price prediction loss (Huber или MSE в зависимости от настройки)
         if 'price_change_logits' in predictions and 'price_change' in targets:
             pred_price_logits = predictions['price_change_logits']
             target_price = targets['price_change']
@@ -446,7 +460,7 @@ class MoELoss(nn.Module):
             if pred_price_logits.dim() > 1:
                 pred_price_logits = pred_price_logits.squeeze(-1)
                 
-            losses['price_loss'] = self.mse_loss(pred_price_logits, target_price)
+            losses['price_loss'] = self.price_loss_fn(pred_price_logits, target_price)
         
         # Direction classification loss (CrossEntropy)
         if 'direction_logits' in predictions and 'direction' in targets:
@@ -461,6 +475,38 @@ class MoELoss(nn.Module):
                 pred_direction,
                 target_direction.long()
             )
+        
+        # Consistency loss: цена и направление должны совпадать
+        # (работает только если consistency_weight > 0)
+        if (self.consistency_weight > 0 and 
+            'price_change_logits' in predictions and 
+            'direction_logits' in predictions):
+            
+            pred_price = predictions['price_change_logits']
+            pred_dir = predictions['direction_logits']  # [batch, 2]
+            
+            # Убедиться что размеры правильные
+            if pred_price.dim() > 1:
+                pred_price = pred_price.squeeze(-1)
+            
+            # Разница между UP и DOWN логитами: pred_dir[:, 1] - pred_dir[:, 0]
+            direction_diff = pred_dir[:, 1] - pred_dir[:, 0]  # [batch]
+            
+            # Логика согласованности:
+            # Если price_logit > 0 → direction_diff должен быть > 0 (UP вероятнее)
+            # Если price_logit < 0 → direction_diff должен быть < 0 (DOWN вероятнее)
+            
+            # Наказываем несоответствия знаков
+            # sign(pred_price) и sign(direction_diff) должны быть одинаковыми
+            sign_mismatch = torch.sign(pred_price) * torch.sign(direction_diff) < 0
+            
+            # Величина несоответствия (чем больше price_logit и direction_diff, тем больше штраф)
+            mismatch_magnitude = torch.abs(pred_price) * torch.abs(direction_diff)
+            
+            # Loss: штраф за несоответствие, взвешенный по величине
+            consistency_loss = (sign_mismatch.float() * mismatch_magnitude).mean()
+            
+            losses['consistency_loss'] = consistency_loss
         
         # Volatility prediction loss (MSE on logits)
         if 'volatility_logits' in predictions and 'volatility' in targets:
@@ -508,12 +554,14 @@ class MoELoss(nn.Module):
             entropy = -torch.sum(weights * torch.log(weights + 1e-8), dim=1)
             losses['diversity_loss'] = -entropy.mean()  # Negative because we want to maximize entropy
         
-        # Total loss
+        # Total loss (включая consistency loss если он был вычислен)
         total_loss = 0
         if 'price_loss' in losses:
             total_loss += self.price_weight * losses['price_loss']
         if 'direction_loss' in losses:
             total_loss += self.direction_weight * losses['direction_loss']
+        if 'consistency_loss' in losses:
+            total_loss += self.consistency_weight * losses['consistency_loss']
         if 'volatility_loss' in losses:
             total_loss += self.volatility_weight * losses['volatility_loss']
         if 'magnitude_loss' in losses:
